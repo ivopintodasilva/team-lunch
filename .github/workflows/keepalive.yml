@@ -1,0 +1,13 @@
+# Free Supabase projects pause after 7 days without traffic; ping twice a week.
+name: Keep Supabase awake
+on:
+  schedule:
+    - cron: '0 8 * * 1,4'
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: >
+          curl -fsS "https://kbsgmtkftnurfjkhaxwl.supabase.co/rest/v1/favorites?select=restaurant_id&limit=1"
+          -H "apikey: sb_publishable_BUIzHyW8Jq66NvMkJA2g5g_egfTaE8S"
