@@ -93,7 +93,7 @@ footer a{color:inherit}
     <form id="signin" class="signin" hidden>
       <label for="email">Sign in with your work email to vote</label>
       <div class="tools">
-        <input id="email" type="email" autocomplete="email" placeholder="you@algoriddim.com" required>
+        <input id="email" type="email" autocomplete="email" placeholder="Work email" required>
         <button type="submit" class="on">Email me a link</button>
       </div>
     </form>
@@ -149,7 +149,6 @@ function lunchInstant(key) {
 
 // Publishable key: safe in the page, access is enforced by row-level security (see supabase.sql).
 const sb = window.supabase?.createClient('https://kbsgmtkftnurfjkhaxwl.supabase.co', 'sb_publishable_BUIzHyW8Jq66NvMkJA2g5g_egfTaE8S');
-const TEAM = /@algoriddim\.com$/i;
 const ok = r => { if (r.error) throw r.error; return r.data; };
 let week = lunchWeek(), votes = [], myId = null, myEmail = '', canVote = false;
 
@@ -262,7 +261,6 @@ $('me').addEventListener('click', async e => {
 $('signin').addEventListener('submit', async e => {
   e.preventDefault();
   const email = $('email').value.trim();
-  if (!TEAM.test(email)) { $('status').textContent = 'Use your @algoriddim.com address. Voting is only open to the team.'; return; }
   const b = e.submitter; b.disabled = true;
   const {error} = await sb.auth.signInWithOtp({email, options: {emailRedirectTo: location.origin + location.pathname}});
   b.disabled = false;
@@ -305,9 +303,10 @@ renderStandings(); renderList();
   const session = (await sb.auth.getSession()).data.session;
   if (!session) { $('signin').hidden = false; $('status').textContent = 'Sign in to see the votes and take part. You can browse the list without signing in.'; return; }
   myId = session.user.id; myEmail = session.user.email || '';
-  canVote = TEAM.test(myEmail);
+  // The allowed email domain lives only in the database (is_team() in supabase.sql).
+  canVote = (await sb.rpc('is_team')).data === true;
   renderMe();
-  if (!canVote) { $('status').textContent = 'Voting is only open to @algoriddim.com addresses.'; return; }
+  if (!canVote) { $('status').textContent = "Voting is only open to the team's work email addresses."; return; }
   // Name saved on another device or in an earlier week lives on the latest vote row.
   if (!myName) { const {data} = await sb.from('votes').select('name').eq('user_id', myId).order('week', {ascending: false}).limit(1); myName = data?.[0]?.name || ''; renderMe(); }
   await Promise.all([loadVotes(), loadFavs()]);

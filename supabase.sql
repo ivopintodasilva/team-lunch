@@ -16,7 +16,8 @@ create table if not exists public.favorites (
   created_at    timestamptz not null default now()
 );
 
--- Only signed-in @algoriddim.com accounts can read or write. Magic-link sign-in proves the address.
+-- Only signed-in accounts on the team's email domain can read or write. Magic-link sign-in proves the address.
+-- The page also calls this (rpc 'is_team') to decide whether to show voting controls.
 create or replace function public.is_team() returns boolean
 language sql stable as $$ select coalesce(auth.jwt() ->> 'email', '') ilike '%@algoriddim.com' $$;
 
