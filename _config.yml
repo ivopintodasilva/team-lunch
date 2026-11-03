@@ -1,1 +1,1 @@
-exclude: [supabase.sql, template.html, build.py, data, .github, .gitignore]
+exclude: [supabase.sql, seed.py, .github, .gitignore]

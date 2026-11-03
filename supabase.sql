@@ -43,15 +43,17 @@ do $$ begin
   alter publication supabase_realtime add table public.votes, public.favorites;
 exception when duplicate_object then null; end $$;
 
--- Initial favourites (OpenStreetMap ids).
-insert into public.favorites (restaurant_id) values
-  ('n10763204005'), -- The Klub Kitchen
-  ('n12737395361'), -- Japan Plaza
-  ('n12747998498'), -- Dump Ling
-  ('n567837367'),   -- Monsieur Vuong
-  ('n5140813622'),  -- Banh Mi Stable
-  ('n2831137575'),  -- Mädchenitaliener
-  ('n6058583255'),  -- Iimori Ramen
-  ('n9907785210'),  -- Standard Pizza Mitte (filtered out as closed Wed 13:00)
-  ('n13529669101')  -- Taquería El Oso
-on conflict do nothing;
+-- Restaurant list and photos: team-only, loaded by seed.py (kept out of the public site).
+create table if not exists public.restaurants (
+  id   text primary key,
+  data jsonb not null
+);
+alter table public.restaurants enable row level security;
+drop policy if exists "team reads restaurants" on public.restaurants;
+create policy "team reads restaurants" on public.restaurants for select to authenticated using (public.is_team());
+
+insert into storage.buckets (id, name, public) values ('restaurant-images', 'restaurant-images', false)
+on conflict (id) do nothing;
+drop policy if exists "team reads restaurant images" on storage.objects;
+create policy "team reads restaurant images" on storage.objects for select to authenticated
+  using (bucket_id = 'restaurant-images' and public.is_team());
