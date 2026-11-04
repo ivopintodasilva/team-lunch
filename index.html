@@ -81,15 +81,15 @@ footer a{color:inherit}
   </header>
 
   <form id="signin" class="signin ballot" hidden>
-    <label for="email">Sign in with your work email</label>
+    <label for="email">Enter your work email to vote</label>
     <div class="tools">
       <input id="email" type="email" autocomplete="email" placeholder="Work email" required>
-      <button type="submit" class="on">Email me a link</button>
+      <button type="submit" class="on">Continue</button>
     </div>
   </form>
   <p class="note" id="status">Loading…</p>
 
-  <!-- Everything below stays empty until a team member signs in; the data comes from Supabase. -->
+  <!-- Everything below stays empty until a team email is entered; the data comes from Supabase. -->
   <section class="ballot" id="ballot" aria-labelledby="b-h" hidden>
     <div class="when">
       <h2 id="b-h">Lunch <span id="date"></span>, 13:00</h2>
@@ -139,8 +139,9 @@ function lunchInstant(key) {
   return new Date(Date.UTC(...key.split('-').map((v, i) => i === 1 ? v - 1 : +v), 13 - h));
 }
 
-// Publishable key: safe in the page, access is enforced by row-level security (see supabase.sql).
-const sb = window.supabase?.createClient('https://kbsgmtkftnurfjkhaxwl.supabase.co', 'sb_publishable_BUIzHyW8Jq66NvMkJA2g5g_egfTaE8S');
+// No login: the typed email is the identity (see supabase.sql).
+const SB_URL = 'https://kbsgmtkftnurfjkhaxwl.supabase.co';
+const sb = window.supabase?.createClient(SB_URL, 'sb_publishable_BUIzHyW8Jq66NvMkJA2g5g_egfTaE8S', {auth: {persistSession: false}});
 const TEAM = /@algoriddim\.com$/i;
 const ok = r => { if (r.error) throw r.error; return r.data; };
 let week = lunchWeek(), votes = [], favs = new Set(), myId = null, myEmail = '', myName = '';
@@ -213,30 +214,29 @@ $('list').addEventListener('click', async e => {
   adding ? picks.add(id) : picks.delete(id);
   b.disabled = true;
   try {
-    ok(await sb.from('votes').upsert({user_id: myId, week, name: myName, picks: [...picks], updated_at: new Date().toISOString()}));
+    ok(await sb.from('votes').upsert({email: myId, week, name: myName, picks: [...picks], updated_at: new Date().toISOString()}));
     if (adding && !favs.has(id)) ok(await sb.from('favorites').upsert({restaurant_id: id, from_vote: true}, {onConflict: 'restaurant_id', ignoreDuplicates: true}));
     await Promise.all([loadVotes(), loadFavs()]);
   } catch { $('status').textContent = "Your vote didn't save. Check your connection and try again."; b.disabled = false; }
 });
 for (const id of ['q', 'cuisine', 'veg', 'favOnly']) $(id).addEventListener('input', renderList);
 
-$('me').addEventListener('click', async e => {
-  if (e.target.id === 'signout') { await sb.auth.signOut(); location.reload(); }
+$('me').addEventListener('click', e => {
+  if (e.target.id === 'signout') { try { localStorage.removeItem('lunchEmail'); } catch {} location.reload(); }
 });
-$('signin').addEventListener('submit', async e => {
+$('signin').addEventListener('submit', e => {
   e.preventDefault();
-  const email = $('email').value.trim();
+  const email = $('email').value.trim().toLowerCase();
   if (!TEAM.test(email)) { $('status').textContent = 'Use your work email address. This page is only open to the team.'; return; }
-  const b = e.submitter; b.disabled = true;
-  const {error} = await sb.auth.signInWithOtp({email, options: {emailRedirectTo: location.origin + location.pathname}});
-  b.disabled = false;
-  $('status').textContent = error ? `Couldn't send the link: ${error.message}` : `Check ${email} for a sign-in link. Open it on this device.`;
+  try { localStorage.setItem('lunchEmail', email); } catch {}
+  $('signin').hidden = true;
+  start(email);
 });
 
 async function loadVotes() {
-  const {data, error} = await sb.from('votes').select('user_id,name,picks').eq('week', week);
+  const {data, error} = await sb.from('votes').select('email,name,picks').eq('week', week);
   if (error) { $('status').textContent = "Couldn't load the ballot. Reload the page to try again."; return; }
-  votes = data.map(v => ({uid: v.user_id, name: v.name, picks: v.picks}));
+  votes = data.map(v => ({uid: v.email, name: v.name, picks: v.picks}));
   const n = votes.filter(v => v.picks.length).length;
   $('tally').textContent = `${n} ${n === 1 ? 'person has' : 'people have'} voted. Vote for as many places as you like; tap again to take a vote back.`;
   renderStandings(); renderList();
@@ -250,21 +250,15 @@ async function loadPlaces() {
   byId = Object.fromEntries(R.map(r => [r.id, r]));
   $('total').textContent = R.length;
   [...new Set(R.flatMap(r => r.c ? r.c.split(', ') : []))].sort().forEach(c => $('cuisine').add(new Option(c[0].toUpperCase() + c.slice(1), c)));
-  // Photos sit in a private storage bucket; signed links last a day.
-  const paths = R.filter(r => r.i).map(r => r.id + '.jpg');
-  const {data} = paths.length ? await sb.storage.from('restaurant-images').createSignedUrls(paths, 86400) : {data: []};
-  for (const s of data || []) if (s.signedUrl) pics[s.path.replace('.jpg', '')] = s.signedUrl;
+  for (const r of R) if (r.i) pics[r.id] = `${SB_URL}/storage/v1/object/public/restaurant-images/${r.id}.jpg`;
 }
 
-(async () => {
-  if (!sb) { $('status').textContent = "Couldn't reach the voting service. Reload the page to try again."; return; }
-  const session = (await sb.auth.getSession()).data.session;
-  if (!session) { $('signin').hidden = false; $('status').textContent = 'Sign in to see this week’s vote.'; return; }
-  myId = session.user.id; myEmail = session.user.email || '';
-  myName = myEmail.split('@')[0].slice(0, 30);
+async function start(email) {
+  myId = myEmail = email;
+  myName = email.split('@')[0].slice(0, 30);
   $('me').hidden = false;
-  $('me').innerHTML = `Signed in as ${esc(myEmail)} · <button type="button" class="linkish" id="signout">Sign out</button>`;
-  if (!TEAM.test(myEmail)) { $('status').textContent = 'This page is only open to the team’s work email addresses.'; return; }
+  $('me').innerHTML = `Voting as ${esc(myEmail)} · <button type="button" class="linkish" id="signout">Change email</button>`;
+  $('status').textContent = 'Loading…';
   try { await loadPlaces(); } catch { $('status').textContent = "Couldn't load the restaurants. Reload the page to try again."; return; }
   $('status').hidden = true; $('ballot').hidden = false; $('places').hidden = false;
   renderHeader(); setInterval(renderHeader, 30000);
@@ -273,6 +267,13 @@ async function loadPlaces() {
     .on('postgres_changes', {event: '*', schema: 'public', table: 'votes'}, loadVotes)
     .on('postgres_changes', {event: '*', schema: 'public', table: 'favorites'}, loadFavs)
     .subscribe();
+}
+
+(() => {
+  if (!sb) { $('status').textContent = "Couldn't reach the voting service. Reload the page to try again."; return; }
+  let saved = ''; try { saved = localStorage.getItem('lunchEmail') || ''; } catch {}
+  if (TEAM.test(saved)) return start(saved);
+  $('signin').hidden = false; $('status').textContent = '';
 })();
 </script>
 </body>

@@ -1,60 +1,83 @@
--- Run once in Supabase → SQL Editor. Safe to re-run.
+-- Run in Supabase → SQL Editor. Safe to re-run.
+-- No login: people identify by typing their work email. Anyone with the page's publishable key
+-- can read; writes only need an @algoriddim.com address (not verified).
 
 create table if not exists public.votes (
-  user_id    uuid not null default auth.uid() references auth.users on delete cascade,
+  email      text not null,
   week       date not null,                       -- the Wednesday this vote is for
   name       text not null check (char_length(name) between 1 and 30),
   picks      text[] not null default '{}' check (cardinality(picks) <= 300),
   updated_at timestamptz not null default now(),
-  primary key (user_id, week)
+  primary key (email, week)
 );
+
+-- One-off migration from the magic-link version (votes keyed by auth user id → keyed by email).
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'votes' and column_name = 'user_id') then
+    drop policy if exists "team reads votes" on public.votes;
+    drop policy if exists "own vote insert" on public.votes;
+    drop policy if exists "own vote update" on public.votes;
+    drop policy if exists "own vote delete" on public.votes;
+    alter table public.votes add column if not exists email text;
+    update public.votes v set email = lower(u.email) from auth.users u where u.id = v.user_id;
+    delete from public.votes where email is null;
+    alter table public.votes drop constraint votes_pkey;
+    alter table public.votes drop column user_id;
+    alter table public.votes alter column email set not null;
+    alter table public.votes add primary key (email, week);
+  end if;
+end $$;
+
+alter table public.votes drop constraint if exists votes_team_email;
+alter table public.votes add constraint votes_team_email check (email = lower(email) and email like '%_@algoriddim.com');
 
 create table if not exists public.favorites (
   restaurant_id text primary key check (char_length(restaurant_id) <= 40),
-  created_by    uuid default auth.uid(),
   from_vote     boolean not null default false,
   created_at    timestamptz not null default now()
 );
+alter table public.favorites drop column if exists created_by;
 
--- Only signed-in accounts on the team's email domain can read or write. Magic-link sign-in proves the address.
-create or replace function public.is_team() returns boolean
-language sql stable as $$ select coalesce(auth.jwt() ->> 'email', '') ilike '%@algoriddim.com' $$;
+create table if not exists public.restaurants (
+  id   text primary key,
+  data jsonb not null
+);
 
 alter table public.votes enable row level security;
 alter table public.favorites enable row level security;
+alter table public.restaurants enable row level security;
 
-drop policy if exists "team reads votes" on public.votes;
-drop policy if exists "own vote insert" on public.votes;
-drop policy if exists "own vote update" on public.votes;
-drop policy if exists "own vote delete" on public.votes;
-create policy "team reads votes" on public.votes for select to authenticated using (public.is_team());
-create policy "own vote insert"  on public.votes for insert to authenticated with check (public.is_team() and user_id = auth.uid());
-create policy "own vote update"  on public.votes for update to authenticated using (user_id = auth.uid()) with check (public.is_team() and user_id = auth.uid());
-create policy "own vote delete"  on public.votes for delete to authenticated using (user_id = auth.uid());
-
+-- Old login-based policies.
 drop policy if exists "team reads favorites" on public.favorites;
 drop policy if exists "team adds favorites" on public.favorites;
 drop policy if exists "team removes favorites" on public.favorites;
-create policy "team reads favorites"   on public.favorites for select to authenticated using (public.is_team());
-create policy "team adds favorites"    on public.favorites for insert to authenticated with check (public.is_team());
-create policy "team removes favorites" on public.favorites for delete to authenticated using (public.is_team());
+drop policy if exists "team reads restaurants" on public.restaurants;
+drop policy if exists "team reads restaurant images" on storage.objects;
+drop function if exists public.is_team();
+
+-- Open policies (anon = the page's publishable key). Restaurants are read-only; seed.py writes them.
+drop policy if exists "read votes" on public.votes;
+drop policy if exists "add vote" on public.votes;
+drop policy if exists "change vote" on public.votes;
+create policy "read votes"  on public.votes for select to anon, authenticated using (true);
+create policy "add vote"    on public.votes for insert to anon, authenticated with check (true);
+create policy "change vote" on public.votes for update to anon, authenticated using (true) with check (true);
+
+drop policy if exists "read favorites" on public.favorites;
+drop policy if exists "add favorites" on public.favorites;
+drop policy if exists "remove favorites" on public.favorites;
+create policy "read favorites"   on public.favorites for select to anon, authenticated using (true);
+create policy "add favorites"    on public.favorites for insert to anon, authenticated with check (true);
+create policy "remove favorites" on public.favorites for delete to anon, authenticated using (true);
+
+drop policy if exists "read restaurants" on public.restaurants;
+create policy "read restaurants" on public.restaurants for select to anon, authenticated using (true);
+
+-- Photos: public bucket, served by plain URL.
+insert into storage.buckets (id, name, public) values ('restaurant-images', 'restaurant-images', true)
+on conflict (id) do update set public = true;
 
 -- Live updates in the page.
 do $$ begin
   alter publication supabase_realtime add table public.votes, public.favorites;
 exception when duplicate_object then null; end $$;
-
--- Restaurant list and photos: team-only, loaded by seed.py (kept out of the public site).
-create table if not exists public.restaurants (
-  id   text primary key,
-  data jsonb not null
-);
-alter table public.restaurants enable row level security;
-drop policy if exists "team reads restaurants" on public.restaurants;
-create policy "team reads restaurants" on public.restaurants for select to authenticated using (public.is_team());
-
-insert into storage.buckets (id, name, public) values ('restaurant-images', 'restaurant-images', false)
-on conflict (id) do nothing;
-drop policy if exists "team reads restaurant images" on storage.objects;
-create policy "team reads restaurant images" on storage.objects for select to authenticated
-  using (bucket_id = 'restaurant-images' and public.is_team());
